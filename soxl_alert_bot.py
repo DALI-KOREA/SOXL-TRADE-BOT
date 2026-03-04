@@ -6,7 +6,9 @@
 # ================================================================
 
 !pip install yfinance -q
-
+import os
+BOT_TOKEN = os.environ.get("SOXL_TRADE_BOT")
+CHAT_ID = os.environ.get("CHAT_ID")
 import yfinance as yf
 import requests
 from datetime import datetime
@@ -15,8 +17,7 @@ import pytz
 # ================================================================
 # ⬇️ 여기만 매일 업데이트 하세요!
 # ================================================================
-BOT_TOKEN = "여기에_텔레그램_토큰_입력"
-CHAT_ID = "8742209830"
+
 
 # 오늘 현재 상태 (매매 후 업데이트)
 잔금 = 7715.47        # 현재 잔금 $
