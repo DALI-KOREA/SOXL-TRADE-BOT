@@ -5,7 +5,7 @@
 # 매일 한국시간 오전 8시 자동실행 (GitHub Actions)
 # ================================================================
 
-!pip install yfinance -q
+
 import os
 BOT_TOKEN = os.environ.get("SOXL_TRADE_BOT")
 CHAT_ID = os.environ.get("CHAT_ID")
