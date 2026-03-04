@@ -5,7 +5,7 @@ from datetime import datetime
 import pytz
 
 BOT_TOKEN = os.environ.get("SOXL_TRADE_BOT")
-CHAT_ID = os.environ.get("CHAT_ID")
+CHAT_ID = os.environ.get("8742209830")
 
 balance = 7715.47
 holdings = 59
