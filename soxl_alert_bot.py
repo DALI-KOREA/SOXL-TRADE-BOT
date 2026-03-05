@@ -181,17 +181,13 @@ def webhook():
             state = load_state()
             parts = text.split()
 
-            for part in parts:
-                if "단가" in part:
-                    buy_price = float(part.replace("단가", ""))
-                elif "개수" in part:
-                    buy_qty = int(part.replace("개수", ""))
-                elif "보유" in part:
-                    state["holdings"] = int(part.replace("보유", ""))
-                elif "평단" in part:
-                    state["avg_price"] = float(part.replace("평단", ""))
-                elif "잔금" in part:
-                    state["balance"] = float(part.replace("잔금", ""))
+          for part in parts:
+    if "보유" in part:
+        state["holdings"] = int(part.replace("보유", ""))
+    elif "평단" in part:
+        state["avg_price"] = float(part.replace("평단", ""))
+    elif "잔금" in part:
+        state["balance"] = float(part.replace("잔금", ""))
 
             state["updated_today"] = True
             save_state(state)
