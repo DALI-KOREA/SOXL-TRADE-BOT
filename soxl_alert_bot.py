@@ -205,9 +205,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 ```
-
-**Commit changes → Render가 자동으로 재배포해요!**
-
-2~3분 후 텔레그램에 다시 입력해보세요 😊
-```
-업데이트 보유59 평단61.79 잔금7792.14
