@@ -1,17 +1,34 @@
 import os
+import json
 import yfinance as yf
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+from flask import Flask, request
+from apscheduler.schedulers.background import BackgroundScheduler
 
-BOT_TOKEN = os.environ.get("8705583279:AAGk6V3YyGWz2LrLcSXL5P0uHu9dKBmyk5s")
-CHAT_ID = os.environ.get("8742209830")
+app = Flask(__name__)
 
-balance = 7715.47
-holdings = 59
-avg_price = 64.961
-season2_profit = 1548.19
-season2_start = 10000.00
+BOT_TOKEN = os.environ.get("SOXL_TRADE_BOT")
+CHAT_ID = os.environ.get("CHAT_ID")
+STATE_FILE = "state.json"
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {
+        "balance": 6321.29,
+        "holdings": 85,
+        "avg_price": 61.493,
+        "season2_profit": 1548.19,
+        "season2_start": 10000.00,
+        "updated_today": False
+    }
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
 def get_soxl_data():
     soxl = yf.download("SOXL", period="2d", interval="30m", progress=False)
@@ -23,52 +40,181 @@ def get_soxl_data():
     close = float(soxl['Close'].iloc[-1])
     return round(vwap, 2), round(close, 2)
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    response = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    print(f"Status: {response.status_code}")
+def calculate_plan(vwap, close, state):
+    balance = state["balance"]
+    holdings = state["holdings"]
+    avg_price = state["avg_price"]
 
-def main():
+    budget = balance * 0.25
+    buy1_price = round(vwap * 0.999, 2)
+    buy2_price = round(vwap * 1.001, 2)
+    buy1_qty = int((budget * 0.5) / buy1_price)
+    buy2_qty = int((budget * 0.5) / buy2_price)
+
+    sell_orders = []
+    if close > avg_price * 1.01:
+        sell_orders.append({"price": round(avg_price * 1.01, 2), "qty": int(holdings * 0.4), "type": "익절"})
+        sell_orders.append({"price": round(avg_price * 1.015, 2), "qty": -1, "type": "익절"})
+    elif close < avg_price * 0.98:
+        sell_orders.append({"price": round(avg_price * 1.01, 2), "qty": int(holdings * 0.15), "type": "익절시도"})
+        sell_orders.append({"price": round(vwap * 1.003, 2), "qty": int(holdings * 0.15), "type": "부분손절"})
+        sell_orders.append({"price": round(vwap * 1.006, 2), "qty": int(holdings * 0.15), "type": "부분손절"})
+    else:
+        sell_orders.append({"price": round(avg_price * 1.005, 2), "qty": int(holdings * 0.3), "type": "익절"})
+        sell_orders.append({"price": round(avg_price * 1.01, 2), "qty": -1, "type": "익절"})
+
+    return buy1_price, buy1_qty, buy2_price, buy2_qty, sell_orders
+
+def simulate_trade(vwap, close, state, buy1_price, buy1_qty, buy2_price, buy2_qty, sell_orders):
+    balance = state["balance"]
+    holdings = state["holdings"]
+    avg_price = state["avg_price"]
+    season2_profit = state["season2_profit"]
+    realized = 0
+
+    if buy1_price <= close * 1.01:
+        cost = buy1_price * buy1_qty
+        if cost <= balance:
+            avg_price = (avg_price * holdings + buy1_price * buy1_qty) / (holdings + buy1_qty)
+            holdings += buy1_qty
+            balance -= cost
+
+    if buy2_price <= close * 1.01:
+        cost = buy2_price * buy2_qty
+        if cost <= balance:
+            avg_price = (avg_price * holdings + buy2_price * buy2_qty) / (holdings + buy2_qty)
+            holdings += buy2_qty
+            balance -= cost
+
+    for order in sell_orders:
+        sell_price = order["price"]
+        sell_qty = order["qty"] if order["qty"] != -1 else holdings
+        if sell_qty > 0 and holdings >= sell_qty:
+            profit = (sell_price - avg_price) * sell_qty
+            balance += sell_price * sell_qty
+            realized += profit
+            holdings -= sell_qty
+
+    state["balance"] = round(balance, 2)
+    state["holdings"] = holdings
+    state["avg_price"] = round(avg_price, 3)
+    state["season2_profit"] = round(season2_profit + realized, 2)
+    state["updated_today"] = False
+    return state
+
+def build_message(state, vwap, close, buy1_price, buy1_qty, buy2_price, buy2_qty, sell_orders, title="SOXL 매매 계획"):
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
-    vwap, close = get_soxl_data()
+    profit_rate = round((state["season2_profit"] / state["season2_start"]) * 100, 2)
+    unrealized = round((close - state["avg_price"]) * state["holdings"], 2)
 
-    buy1 = round(vwap * 0.999, 2)
-    buy2 = round(vwap * 1.001, 2)
-    budget = balance * 0.25
-    qty1 = int((budget * 0.5) / buy1)
-    qty2 = int((budget * 0.5) / buy2)
+    sell_msg = ""
+    for o in sell_orders:
+        qty_txt = "나머지전부" if o["qty"] == -1 else str(o["qty"]) + "개"
+        emoji = "🟢" if o["type"] == "익절" else "🟡"
+        sell_msg += f"\n{emoji} ${o['price']} x {qty_txt} ({o['type']})"
 
-    if close > avg_price * 1.01:
-        sell_plan = "PROFIT: $" + str(round(avg_price*1.01,2)) + " x " + str(int(holdings*0.4)) + " / $" + str(round(avg_price*1.015,2)) + " x rest"
-    elif close < avg_price * 0.99:
-        stop_price = round(vwap * 1.001, 2)
-        stop_qty = int(holdings * 0.2)
-        sell_plan = "PARTIAL STOP: $" + str(stop_price) + " x " + str(stop_qty)
-    else:
-        sell_plan = "HOLD - no sell condition"
-
-    profit_rate = round((season2_profit / season2_start) * 100, 2)
-    unrealized = round((close - avg_price) * holdings, 2)
-
-    msg = (
-        "SOXL Trade Plan " + now.strftime('%m/%d') + "\n\n"
-        "Balance: $" + str(balance) + "\n"
-        "Holdings: " + str(holdings) + " shares\n"
-        "Avg Price: $" + str(avg_price) + "\n"
-        "Last Close: $" + str(close) + "\n"
-        "Unrealized: $" + str(unrealized) + "\n\n"
-        "VWAP: $" + str(vwap) + "\n\n"
-        "BUY PLAN\n"
-        "$" + str(buy1) + " x " + str(qty1) + "\n"
-        "$" + str(buy2) + " x " + str(qty2) + "\n\n"
-        "SELL PLAN\n"
-        + sell_plan + "\n\n"
-        "Season2 Profit: $" + str(season2_profit) + "\n"
-        "Season2 Return: " + str(profit_rate) + "%"
+    return (
+        f"📊 {title} {now.strftime('%m/%d')}\n\n"
+        f"[현재 상태]\n"
+        f"잔금: ${state['balance']:,}\n"
+        f"보유: {state['holdings']}개\n"
+        f"평단: ${state['avg_price']}\n"
+        f"전일종가: ${close}\n"
+        f"평가손익: ${unrealized:+,}\n\n"
+        f"VWAP: ${vwap}\n\n"
+        f"[매수 계획]\n"
+        f"${buy1_price} x {buy1_qty}개\n"
+        f"${buy2_price} x {buy2_qty}개\n\n"
+        f"[매도 계획]{sell_msg}\n\n"
+        f"[수익 현황]\n"
+        f"시즌2 실현수익: ${state['season2_profit']:,}\n"
+        f"시즌2 수익률: {profit_rate}%"
     )
 
-    send_telegram(msg)
-    print(msg)
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-main()
+def morning_alert():
+    """매일 아침 8시 알림"""
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.now(kst)
+    print(f"아침 알림 실행: {now}")
+
+    state = load_state()
+    vwap, close = get_soxl_data()
+    buy1, qty1, buy2, qty2, sells = calculate_plan(vwap, close, state)
+    msg = build_message(state, vwap, close, buy1, qty1, buy2, qty2, sells)
+    send_telegram(msg)
+
+def evening_check():
+    """매일 오후 6시 체크 - 업데이트 없으면 자동 계산"""
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.now(kst)
+    print(f"저녁 체크 실행: {now}")
+
+    state = load_state()
+    if not state.get("updated_today", False):
+        vwap, close = get_soxl_data()
+        buy1, qty1, buy2, qty2, sells = calculate_plan(vwap, close, state)
+        new_state = simulate_trade(vwap, close, state, buy1, qty1, buy2, qty2, sells)
+        save_state(new_state)
+        send_telegram("⚙️ 오후 6시 자동 업데이트\n계획대로 체결 가정하여 내일 상태 반영했어요!")
+    else:
+        print("오늘 이미 업데이트 됨 - 스킵")
+
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    """텔레그램 메시지 수신"""
+    data = request.json
+    if "message" not in data:
+        return "ok"
+
+    text = data["message"].get("text", "")
+    chat_id = data["message"]["chat"]["id"]
+
+    # 업데이트 명령어 파싱
+    # 예: 업데이트 단가56.51 개수26 보유96 평단61.20 잔금8721
+    if text.startswith("업데이트"):
+        try:
+            state = load_state()
+            parts = text.split()
+
+            for part in parts:
+                if "단가" in part:
+                    buy_price = float(part.replace("단가", ""))
+                elif "개수" in part:
+                    buy_qty = int(part.replace("개수", ""))
+                elif "보유" in part:
+                    state["holdings"] = int(part.replace("보유", ""))
+                elif "평단" in part:
+                    state["avg_price"] = float(part.replace("평단", ""))
+                elif "잔금" in part:
+                    state["balance"] = float(part.replace("잔금", ""))
+
+            state["updated_today"] = True
+            save_state(state)
+
+            vwap, close = get_soxl_data()
+            buy1, qty1, buy2, qty2, sells = calculate_plan(vwap, close, state)
+            msg = build_message(state, vwap, close, buy1, qty1, buy2, qty2, sells, title="✅ 업데이트 완료! 내일 매매 계획")
+            send_telegram(msg)
+
+        except Exception as e:
+            send_telegram(f"❌ 입력 오류: {str(e)}\n\n형식: 업데이트 단가56.51 개수26 보유96 평단61.20 잔금8721")
+
+    return "ok"
+
+@app.route("/")
+def index():
+    return "SOXL Bot Running!"
+
+if __name__ == "__main__":
+    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+    scheduler.add_job(morning_alert, 'cron', day_of_week='mon-fri', hour=8, minute=0)
+    scheduler.add_job(evening_check, 'cron', day_of_week='mon-fri', hour=18, minute=0)
+    scheduler.start()
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
